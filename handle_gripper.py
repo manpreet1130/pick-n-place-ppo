@@ -32,7 +32,7 @@ def createEnvironment():
     target_color = [1, 1, 0, 0.8]
     target_position = [table_max[0] / 4, 0, table_max[2]]
     target_visual = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=target_dimensions, rgbaColor=target_color)
-    p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=target_visual, basePosition=target_position)
+    target = p.createMultiBody(baseMass=0, baseCollisionShapeIndex=-1, baseVisualShapeIndex=target_visual, basePosition=target_position)
 
     # box
     box_dimensions = [0.025, 0.025, 0.025]
@@ -40,9 +40,59 @@ def createEnvironment():
     box_position = [table_max[0] / 4, table_max[1] / 2, table_max[2]]
     box_collision = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=box_dimensions)
     box_visual = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=box_dimensions, rgbaColor=box_color)
-    p.createMultiBody(baseMass=0.1, baseCollisionShapeIndex=box_collision, baseVisualShapeIndex=box_visual, basePosition=box_position)
+    box = p.createMultiBody(baseMass=0.1, baseCollisionShapeIndex=box_collision, baseVisualShapeIndex=box_visual, basePosition=box_position)
 
     return robot, target, box
+
+def moveGripperToJointPosition(robot, joints, target_positions, max_velocity=0.6):
+    for joint, target in zip(joints, target_positions):
+        p.setJointMotorControl2(robot, 
+                                joint, 
+                                controlMode=p.POSITION_CONTROL, 
+                                targetPosition=target, 
+                                maxVelocity=max_velocity)
+    return executeAction(robot, joints, target_positions)
+
+def openCloseGripper(robot, open = False, tolerance=1e-3, position_tolerance=1e-5, force=40, max_steps=250):
+    gripperTarget = ROBOT_FINGER_OPEN if open else ROBOT_FINGER_CLOSED
+    for joint in PRISMATIC_JOINTS:
+        p.setJointMotorControl2(robot, 
+                                joint,
+                                controlMode=p.POSITION_CONTROL,
+                                targetPosition=gripperTarget,
+                                force=force)
+
+    previousPositions = None
+    for step in range(max_steps):
+        p.stepSimulation()
+        time.sleep(1.0 / 240)
+
+        positions = [p.getJointState(robot, joint)[0] for joint in PRISMATIC_JOINTS]
+
+        if all(abs(positions[joint] - gripperTarget) < tolerance for joint in range(len(positions))):
+            return True
+
+        stallCount = 0
+        if previousPositions and all(abs(positions[joint] - previousPositions[joint]) < position_tolerance for joint in range(len(positions))):
+            stallCount += 1
+
+            if stallCount > 5:
+                return not open
+        else:
+            stallCount = 0
+        previousPositions = positions
+    print("max steps reached but gripper didnt open/close")
+    return False
+    
+def executeAction(robot, joints, target_positions, tolerance=1e-3, max_steps=1000):
+    for step in range(max_steps):
+        p.stepSimulation()
+        time.sleep(1.0 / 240)
+        errors = [abs(p.getJointState(robot, joint)[0] - target) for joint, target in zip(joints, target_positions)]
+        if max(errors) <= tolerance:
+            return True
+    print("could not reach the desired configuration...")
+    return False
 
 
 if __name__ == "__main__":
@@ -51,6 +101,12 @@ if __name__ == "__main__":
     p.setGravity(0, 0, -9.81)
 
     robot, target, box = createEnvironment()
+
+    moveGripperToJointPosition(robot, REVOLUTE_JOINTS, RANDOM_POSE)
+    openCloseGripper(robot, True)
+    moveGripperToJointPosition(robot, REVOLUTE_JOINTS, ROBOT_HOME_POSITION)
+    openCloseGripper(robot, False)
+
 
     while True:
         p.stepSimulation()
