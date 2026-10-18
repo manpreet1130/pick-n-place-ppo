@@ -53,6 +53,16 @@ def moveGripperToJointPosition(robot, joints, target_positions, max_velocity=0.6
                                 maxVelocity=max_velocity)
     return executeAction(robot, joints, target_positions)
 
+def executeAction(robot, joints, target_positions, tolerance=1e-3, max_steps=1000):
+    for step in range(max_steps):
+        p.stepSimulation()
+        time.sleep(1.0 / 240)
+        errors = [abs(p.getJointState(robot, joint)[0] - target) for joint, target in zip(joints, target_positions)]
+        if max(errors) <= tolerance:
+            return True
+    print("could not reach the desired configuration...")
+    return False
+
 def openCloseGripper(robot, open = False, tolerance=1e-3, position_tolerance=1e-5, force=40, max_steps=250):
     gripperTarget = ROBOT_FINGER_OPEN if open else ROBOT_FINGER_CLOSED
     for joint in PRISMATIC_JOINTS:
@@ -83,17 +93,6 @@ def openCloseGripper(robot, open = False, tolerance=1e-3, position_tolerance=1e-
         previousPositions = positions
     print("max steps reached but gripper didnt open/close")
     return False
-    
-def executeAction(robot, joints, target_positions, tolerance=1e-3, max_steps=1000):
-    for step in range(max_steps):
-        p.stepSimulation()
-        time.sleep(1.0 / 240)
-        errors = [abs(p.getJointState(robot, joint)[0] - target) for joint, target in zip(joints, target_positions)]
-        if max(errors) <= tolerance:
-            return True
-    print("could not reach the desired configuration...")
-    return False
-
 
 if __name__ == "__main__":
     physicsClient = p.connect(p.GUI)
@@ -102,10 +101,13 @@ if __name__ == "__main__":
 
     robot, target, box = createEnvironment()
 
-    moveGripperToJointPosition(robot, REVOLUTE_JOINTS, RANDOM_POSE)
-    openCloseGripper(robot, True)
-    moveGripperToJointPosition(robot, REVOLUTE_JOINTS, ROBOT_HOME_POSITION)
-    openCloseGripper(robot, False)
+    # moveGripperToJointPosition(robot, REVOLUTE_JOINTS, RANDOM_POSE)
+    # openCloseGripper(robot, True)
+    # moveGripperToJointPosition(robot, REVOLUTE_JOINTS, ROBOT_HOME_POSITION)
+    # openCloseGripper(robot, False)
+
+    cubePosition, cubeOrientation = p.getBasePositionAndOrientation(box)
+    print(cubePosition, cubeOrientation)
 
 
     while True:
