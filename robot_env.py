@@ -43,7 +43,10 @@ class RobotEnvironment(gym.Env):
         self.table_height = p.getAABB(self.table, -1)[1][2]
         self._lower_limits, self._upper_limits = self._getLimits()
         self.joint_ranges = [upper - lower for lower, upper in zip(self._lower_limits, self._upper_limits)]
-                
+        robot_position, _ = self._get_element_position_and_orientation(self.robot)
+        # reachable area in front of the arm with the gripper pointing down (measured with IK)
+        self.cube_min_limit_x, self.cube_max_limit_x = robot_position[0] + 0.33, robot_position[0] + 0.68
+        self.cube_min_limit_y, self.cube_max_limit_y = robot_position[1] - 0.30, robot_position[1] + 0.30
         # initialize observation space and action space
         self.observation_dims = len(self.active_joints) + 13
         self.observation_space = spaces.Box(
@@ -95,10 +98,16 @@ class RobotEnvironment(gym.Env):
                 targetVelocity=0.0
             )
 
+        random_x_position = self.np_random.uniform(self.cube_min_limit_x, self.cube_max_limit_x)
+        random_y_position = self.np_random.uniform(self.cube_min_limit_y, self.cube_max_limit_y)
+        target_position, _ = self._get_element_position_and_orientation(self.target)
+        cube_no_zone_x = [target_position[0] - self.target_half_dimensions[0], target_position[0] + self.target_half_dimensions[0]]
+        cube_no_zone_y = [target_position[1] - self.target_half_dimensions[1], target_position[1] + self.target_half_dimensions[1]]
+        while cube_no_zone_x[0] <= random_x_position <= cube_no_zone_x[1] and cube_no_zone_y[0] <= random_y_position <= cube_no_zone_y[1]:
+            random_x_position = self.np_random.uniform(self.cube_min_limit_x, self.cube_max_limit_x)
+            random_y_position = self.np_random.uniform(self.cube_min_limit_y, self.cube_max_limit_y)
 
-        # spawning the cube at one position for now: TODO -> convert this to random (x, y) within certain limits
-        _, table_max = p.getAABB(self.table, -1)
-        p.resetBasePositionAndOrientation(self.cube, [table_max[0] / 2.0, table_max[1] / 4.0, table_max[2] + 0.03], p.getQuaternionFromEuler([0, 0, 0]))
+        p.resetBasePositionAndOrientation(self.cube, [random_x_position, random_y_position, self.table_height + self.cube_half_dimensions[2]], p.getQuaternionFromEuler([0, 0, 0]))
         p.resetBaseVelocity(self.cube, [0, 0, 0], [0, 0, 0])
 
         for _ in range(50):
