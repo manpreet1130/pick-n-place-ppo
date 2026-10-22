@@ -17,6 +17,8 @@ class RobotEnvironment(gym.Env):
                        -0.007282385107511599, 1.4879767515924243, 0.8049546850317025, 0.04, 0.04]
         self.active_joints = [0, 1, 2, 3, 4, 5, 6, 9, 10]
         self.hand_link = 11
+        self.lift_height = 0.08
+        self.has_lifted = False
 
         self.gripper_down = p.getQuaternionFromEuler([np.pi, 0, 0])
 
@@ -26,6 +28,7 @@ class RobotEnvironment(gym.Env):
         self.distance_threshold = 0.03
         self.cube_half_dimensions = [0.03, 0.03, 0.03]
         self.target_half_dimensions = [0.1, 0.1, 0.01]
+        
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
@@ -47,8 +50,9 @@ class RobotEnvironment(gym.Env):
         # reachable area in front of the arm with the gripper pointing down (measured with IK)
         self.cube_min_limit_x, self.cube_max_limit_x = robot_position[0] + 0.33, robot_position[0] + 0.68
         self.cube_min_limit_y, self.cube_max_limit_y = robot_position[1] - 0.30, robot_position[1] + 0.30
+        self.cube_rest_height = self.table_height + self.cube_half_dimensions[2]
         # initialize observation space and action space
-        self.observation_dims = len(self.active_joints) + 13
+        self.observation_dims = len(self.active_joints) + 14
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -83,6 +87,7 @@ class RobotEnvironment(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 0
+        self.has_lifted = False
 
         p.setJointMotorControlArray(self.robot, 
                                     self.active_joints, 
@@ -166,6 +171,7 @@ class RobotEnvironment(gym.Env):
             if self.render_mode == 'human':
                 time.sleep(1.0 / 240)
 
+        self._update_lifted()
         observation = self._get_obs()
         info = self._get_info()
         reward = self.getReward(info)
@@ -199,18 +205,74 @@ class RobotEnvironment(gym.Env):
 
         gripper_position, _ = self._get_gripper_position_and_orientation()
         cube_position = info["cube_position"]
+        distance_xy = info["distance_to_target"]
 
-        goal_position = np.array([*info["target_position"][:2], self.table_height + self.cube_half_dimensions[2]])
+        if self.has_lifted:
+            if info["grasped"]:
+                if distance_xy < self.distance_threshold:
+                    desired_z = self.cube_rest_height
+                else:
+                    desired_z = self.cube_rest_height + self.lift_height
+                return -2.0 - distance_xy - abs(cube_position[2] - desired_z)
+            return -2.0 - distance_xy
 
         if info["grasped"]:
-            # carry the cube to the target
-            return -0.5 - np.linalg.norm(goal_position - cube_position)
+            # lift the cube off the table
+            lift_missing = max(0.0, self.cube_rest_height + self.lift_height - cube_position[2])
+            return -3.0 - 5.0 * lift_missing
 
-        # hasn't reached cube yet, reach the cube
-        return -2.0 - np.linalg.norm(cube_position - gripper_position)
+        return -4.0 - np.linalg.norm(cube_position - gripper_position)
+
+    def loadScene(self):
+            # plane
+            p.loadURDF("plane.urdf")
+
+            # table
+            tablePosition, tableOrientation = [0, 0, 0], p.getQuaternionFromEuler([0, 0, 0])
+            table = p.loadURDF("table/table.urdf")
+
+            table_min, table_max = p.getAABB(table, -1)
+
+            # robot
+            robotPosition, robotOrientation = [table_min[0] / 2.0, 0, table_max[2]], p.getQuaternionFromEuler([0, 0, 0])
+            robot = p.loadURDF("franka_panda/panda.urdf", robotPosition, robotOrientation, useFixedBase=True)
+
+            # target
+            target_color = [1, 1, 0, 0.8]
+            target_visual = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=self.target_half_dimensions, rgbaColor=target_color)
+            target_position, target_orientation = [table_max[0] / 4.0, 0, table_max[2]], p.getQuaternionFromEuler([0, 0, 0])
+            target = p.createMultiBody(baseMass=0, 
+                                    baseCollisionShapeIndex=-1, 
+                                    baseVisualShapeIndex=target_visual,
+                                    basePosition=target_position,
+                                    baseOrientation=target_orientation)
+
+            # cube
+            cube_color = [1, 0, 0, 1.0]
+            cube_collision = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=self.cube_half_dimensions)
+            cube_visual = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=self.cube_half_dimensions, rgbaColor=cube_color)
+            cube_position, cube_orientation = [table_max[0] / 4.0, table_max[1] / 4.0, table_max[2] + 0.03], p.getQuaternionFromEuler([0, 0, 0])
+            cube = p.createMultiBody(baseMass=0.5, 
+                                    baseCollisionShapeIndex=cube_collision,
+                                    baseVisualShapeIndex=cube_visual,
+                                    basePosition=cube_position,
+                                    baseOrientation=cube_orientation)    
+            return table, robot, cube, target
 
     def isTerminated(self):
         return self._get_info()["is_success"]
+
+    def _update_lifted(self):
+        cube_position, _ = self._get_element_position_and_orientation(self.cube)
+        target_position, _ = self._get_element_position_and_orientation(self.target)
+        grasped = self._is_grasped()
+        distance = np.linalg.norm(cube_position[:2] - target_position[:2])
+        on_table = abs(cube_position[2] - self.cube_rest_height) < 0.005
+
+        if grasped and cube_position[2] > self.cube_rest_height + self.lift_height:
+            self.has_lifted = True
+        elif not grasped and on_table and distance >= self.distance_threshold:
+            self.has_lifted = False
 
     def _get_element_position_and_orientation(self, element):
         element_position, element_orientation = p.getBasePositionAndOrientation(element)
@@ -232,58 +294,25 @@ class RobotEnvironment(gym.Env):
             cube_position,
             cube_position - gripper_position,
             target_position - cube_position,
-            [float(self._is_grasped())]
+            [float(self._is_grasped())],
+            [float(self.has_lifted)]
         ]).astype(np.float32)
 
     def _get_info(self):
         cube_position, _ = self._get_element_position_and_orientation(self.cube)
         target_position, _ = self._get_element_position_and_orientation(self.target)
         distance = np.linalg.norm(np.array(cube_position[:2]) - np.array(target_position[:2]))
-        on_table = abs(cube_position[2] - (self.table_height + self.cube_half_dimensions[2])) < 0.005
+        on_table = abs(cube_position[2] - self.cube_rest_height) < 0.005
+        grasped = self._is_grasped()
 
         return {
             "cube_position": cube_position,
             "target_position": target_position,
             "distance_to_target": distance,
-            "grasped": self._is_grasped(),
-            "is_success": distance < self.distance_threshold and on_table
+            "grasped": grasped,
+            "has_lifted": self.has_lifted,
+            "is_success": self.has_lifted and on_table and distance < self.distance_threshold and not grasped
         }
-
-    def loadScene(self):
-        # plane
-        p.loadURDF("plane.urdf")
-
-        # table
-        tablePosition, tableOrientation = [0, 0, 0], p.getQuaternionFromEuler([0, 0, 0])
-        table = p.loadURDF("table/table.urdf")
-
-        table_min, table_max = p.getAABB(table, -1)
-
-        # robot
-        robotPosition, robotOrientation = [table_min[0] / 2.0, 0, table_max[2]], p.getQuaternionFromEuler([0, 0, 0])
-        robot = p.loadURDF("franka_panda/panda.urdf", robotPosition, robotOrientation, useFixedBase=True)
-
-        # target
-        target_color = [1, 1, 0, 0.8]
-        target_visual = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=self.target_half_dimensions, rgbaColor=target_color)
-        target_position, target_orientation = [table_max[0] / 4.0, 0, table_max[2]], p.getQuaternionFromEuler([0, 0, 0])
-        target = p.createMultiBody(baseMass=0, 
-                                   baseCollisionShapeIndex=-1, 
-                                   baseVisualShapeIndex=target_visual,
-                                   basePosition=target_position,
-                                   baseOrientation=target_orientation)
-
-        # cube
-        cube_color = [1, 0, 0, 0.8]
-        cube_collision = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=self.cube_half_dimensions)
-        cube_visual = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=self.cube_half_dimensions, rgbaColor=cube_color)
-        cube_position, cube_orientation = [table_max[0] / 4.0, table_max[1] / 4.0, table_max[2] + 0.03], p.getQuaternionFromEuler([0, 0, 0])
-        cube = p.createMultiBody(baseMass=0.5, 
-                                 baseCollisionShapeIndex=cube_collision,
-                                 baseVisualShapeIndex=cube_visual,
-                                 basePosition=cube_position,
-                                 baseOrientation=cube_orientation)    
-        return table, robot, cube, target
 
     def _getLimits(self):
         num_joints = p.getNumJoints(self.robot)
@@ -309,14 +338,3 @@ class RobotEnvironment(gym.Env):
                                    linkIndexA=link)) > 0
             for link in self.active_joints[7:]
         )
-
-
-if __name__ == "__main__":
-    env = RobotEnvironment("human")
-    env.step([0.5, 0.5, 0.5, 1.0])
-    time.sleep(5)
-    observation, info = env.reset()
-
-
-    while True:
-        p.stepSimulation()
