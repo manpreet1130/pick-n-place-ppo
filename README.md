@@ -183,4 +183,3 @@ For visual envs, SB3 wraps the training env as `VecTransposeImage(VecNormalize(.
 
 - Stacking: extend the env to 2–3 cubes.
 - Domain randomization (lighting, colours, camera pose) for the visual env.
-- A `--run-name` flag so runs don't overwrite each other.
